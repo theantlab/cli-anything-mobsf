@@ -49,6 +49,22 @@ cli-anything-mobsf analyse ./app.apk --skip appshield --skip repackage
 cli-anything-mobsf analyse ./app.apk -o ./results -v 34.0.0
 ```
 
+The pipeline displays a progress bar with per-stage timing:
+
+```
+  Analysing: app.apk
+  Output:    ./app_analysis
+  Stages:    6/8 (2 skipped)
+  ────────────────────────────────────────────────────────
+
+  [██████████░░░░░░░░░░]  50%  3/6  APKiD fingerprinting
+    Running local APKiD...
+  ✓ apkid                12.4s
+
+  ────────────────────────────────────────────────────────
+  Done in 8m 32s  |  6 passed  0 failed  2 skipped
+```
+
 Output structure:
 
 ```

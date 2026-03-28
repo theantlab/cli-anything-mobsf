@@ -285,9 +285,36 @@ Orchestrates the 8-stage pipeline. Constructor accepts:
 - `skip` — set of stage names to skip
 - `echo` — output function (default: print, Click passes click.echo)
 
-Each stage method (`_stage_mobsf`, `_stage_jadx`, etc.) is independently try/caught. Failures are recorded in `stage_results` but do not halt the pipeline.
+Each stage method (`_stage_mobsf`, `_stage_jadx`, etc.) is independently try/caught. Failures are recorded in `stage_results` (including per-stage duration) but do not halt the pipeline.
 
 The `_run()` helper executes shell commands via `subprocess.run()` with capture and optional directory context.
+
+**Progress indicator:**
+
+The pipeline displays a visual progress bar, stage counter, and per-stage timing during execution:
+
+```
+  Analysing: app.apk
+  Output:    /path/to/app_analysis
+  Stages:    8/8 (0 skipped)
+  ────────────────────────────────────────────────────────
+
+  [██░░░░░░░░░░░░░░░░░░]  13%  1/8  MobSF upload & scan
+    Uploading to MobSF...
+    Running static analysis...
+  ✓ mobsf                2m 14.3s
+
+  [█████░░░░░░░░░░░░░░░]  25%  2/8  JADX decompilation
+    Decompiling with JADX...
+  ✓ decompiled           1m 47.2s
+  ...
+
+  ────────────────────────────────────────────────────────
+  Done in 8m 32s  |  7 passed  1 failed  0 skipped
+  /path/to/app_analysis
+```
+
+Each stage reports a status marker (`✓` passed, `✗` failed) and its duration. The final summary shows total elapsed time and pass/fail/skip counts. Helper methods `_progress_bar()` and `_fmt_duration()` handle rendering — durations are shown as seconds, minutes+seconds, or hours+minutes depending on magnitude.
 
 #### `core/attack_surface.py`
 
