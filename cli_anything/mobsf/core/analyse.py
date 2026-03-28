@@ -9,9 +9,9 @@ from pathlib import Path
 
 from cli_anything.mobsf.core.attack_surface import scan_attack_surface
 from cli_anything.mobsf.core.objection_patcher import ObjectionPatcher
+from cli_anything.mobsf.scripts import script_path, dictionary_path
 
 
-SCRIPTS_DIR = Path.home() / "Scripts"
 ATTACK_KEYSTORE = Path.home() / ".android" / "attack.jks"
 
 
@@ -232,7 +232,7 @@ class AnalysisPipeline:
         # classcountm.sh
         self.echo("    Counting classes...")
         result = self._run(
-            [str(SCRIPTS_DIR / "classcountm.sh")],
+            [str(script_path("classcountm.sh"))],
             cwd=str(smali_dir), check=False,
         )
         (apktool_dir / "classcount.txt").write_text(result.stdout)
@@ -240,23 +240,23 @@ class AnalysisPipeline:
         # libcount.sh
         self.echo("    Counting libraries...")
         result = self._run(
-            [str(SCRIPTS_DIR / "libcount.sh")],
+            [str(script_path("libcount.sh"))],
             cwd=str(smali_dir), check=False,
         )
         (apktool_dir / "libcount.txt").write_text(result.stdout)
 
         # searchstrings.sh
-        searchstrings_dic = SCRIPTS_DIR / "searchstrings.dic"
+        searchstrings_dic = dictionary_path()
         if searchstrings_dic.is_file():
             self.echo("    Running API grep...")
             result = self._run(
-                [str(SCRIPTS_DIR / "searchstrings.sh"), str(searchstrings_dic)],
+                [str(script_path("searchstrings.sh")), str(searchstrings_dic)],
                 cwd=str(smali_dir), check=False,
             )
             (apktool_dir / "searchstrings.txt").write_text(result.stdout)
 
             result = self._run(
-                [str(SCRIPTS_DIR / "searchstringswithfilenames.sh"), str(searchstrings_dic)],
+                [str(script_path("searchstringswithfilenames.sh")), str(searchstrings_dic)],
                 cwd=str(smali_dir), check=False,
             )
             (apktool_dir / "searchstringswithfilenames.txt").write_text(result.stdout)
@@ -277,7 +277,7 @@ class AnalysisPipeline:
         self.echo("    Re-signing APK...")
         result = self._run(
             [
-                str(SCRIPTS_DIR / "sign-apk.sh"),
+                str(script_path("sign-apk.sh")),
                 self.sdk_version,
                 str(ATTACK_KEYSTORE),
                 "attack", "attack", "attack",

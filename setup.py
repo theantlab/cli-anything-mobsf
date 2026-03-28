@@ -3,9 +3,15 @@ from setuptools import setup, find_namespace_packages
 
 setup(
     name="cli-anything-mobsf",
-    version="0.1.0",
+    version="0.2.0",
     description="CLI-Anything harness for MobSF (Mobile Security Framework)",
     packages=find_namespace_packages(include=["cli_anything.*"]),
+    package_data={
+        "cli_anything.mobsf": [
+            "scripts/*.sh",
+            "scripts/*.dic",
+        ],
+    },
     python_requires=">=3.9",
     install_requires=[
         "click>=8.0",

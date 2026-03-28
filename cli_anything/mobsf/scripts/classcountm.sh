@@ -1,0 +1,3 @@
+#!/bin/bash
+
+find -name "*.smali" -not -path "./smali/android/*" -not -path "./smali/androidx/*" -not -path "./smali_classes*/android/*" -not -path "./smali_classes*/androidx/*" -not -path "./smali/com/google/*" -not -path "./smali_classes*/com/google/*" -not -path "./smali/kotlin/*" -not -path "./smali/kotlinx/*" -not -path "./smali_classes*/kotlin/*" -not -path "./smali_classes*/kotlinx/*" -not -path "./smali/javax/*" -not -path "./smali_classes*/javax/*" -exec grep -FR ".class" {} \; | wc -l
