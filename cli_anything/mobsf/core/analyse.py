@@ -40,31 +40,87 @@ class AnalysisPipeline:
         self._setup_dirs()
 
         stages = [
-            ("mobsf", self._stage_mobsf),
-            ("decompiled", self._stage_jadx),
-            ("apkid", self._stage_apkid_local),
-            ("native", self._stage_native),
-            ("apktool", self._stage_apktool),
-            ("repackage", self._stage_repackage),
-            ("appshield", self._stage_appshield),
-            ("objection", self._stage_objection),
+            ("mobsf", "MobSF upload & scan", self._stage_mobsf),
+            ("decompiled", "JADX decompilation", self._stage_jadx),
+            ("apkid", "APKiD fingerprinting", self._stage_apkid_local),
+            ("native", "Native library analysis", self._stage_native),
+            ("apktool", "APKtool & attack surface", self._stage_apktool),
+            ("repackage", "Repackage test", self._stage_repackage),
+            ("appshield", "AppShield build", self._stage_appshield),
+            ("objection", "Objection patch", self._stage_objection),
         ]
 
-        for name, fn in stages:
+        total = len(stages)
+        active = [s for s in stages if s[0] not in self.skip]
+        active_total = len(active)
+
+        self.echo("")
+        self.echo(f"  Analysing: {self.apk_path.name}")
+        self.echo(f"  Output:    {self.output_dir}")
+        self.echo(f"  Stages:    {active_total}/{total} ({total - active_total} skipped)")
+        self.echo(f"  {'─' * 56}")
+
+        step = 0
+        for name, label, fn in stages:
             if name in self.skip:
-                self.echo(f"  Skipping {name}")
+                self.echo(f"  {'─':>2} {name:<20s} skipped")
                 self.stage_results[name] = {"status": "skipped"}
                 continue
-            self.echo(f"  [{name}]")
+
+            step += 1
+            bar = self._progress_bar(step, active_total)
+            self.echo(f"\n  {bar}  {step}/{active_total}  {label}")
+
+            stage_start = time.time()
             try:
                 fn()
-                self.stage_results[name] = {"status": "ok"}
+                elapsed = time.time() - stage_start
+                self.stage_results[name] = {
+                    "status": "ok",
+                    "duration_seconds": round(elapsed, 1),
+                }
+                self.echo(f"  {'✓':>2} {name:<20s} {self._fmt_duration(elapsed)}")
             except Exception as e:
-                self.echo(f"    FAILED: {e}")
-                self.stage_results[name] = {"status": "error", "error": str(e)}
+                elapsed = time.time() - stage_start
+                self.echo(f"  {'✗':>2} {name:<20s} FAILED ({self._fmt_duration(elapsed)})")
+                self.echo(f"     {e}")
+                self.stage_results[name] = {
+                    "status": "error",
+                    "error": str(e),
+                    "duration_seconds": round(elapsed, 1),
+                }
 
+        total_elapsed = time.time() - self.started_at.timestamp()
         self._write_summary()
-        self.echo(f"\nAnalysis complete: {self.output_dir}")
+
+        self.echo(f"\n  {'─' * 56}")
+        ok = sum(1 for s in self.stage_results.values() if s["status"] == "ok")
+        failed = sum(1 for s in self.stage_results.values() if s["status"] == "error")
+        skipped = sum(1 for s in self.stage_results.values() if s["status"] == "skipped")
+        self.echo(f"  Done in {self._fmt_duration(total_elapsed)}  "
+                   f"|  {ok} passed  {failed} failed  {skipped} skipped")
+        self.echo(f"  {self.output_dir}")
+
+    @staticmethod
+    def _progress_bar(current, total, width=20):
+        """Render a text progress bar."""
+        filled = int(width * current / total)
+        bar = "█" * filled + "░" * (width - filled)
+        pct = int(100 * current / total)
+        return f"[{bar}] {pct:>3}%"
+
+    @staticmethod
+    def _fmt_duration(seconds):
+        """Format seconds as human-readable duration."""
+        if seconds < 60:
+            return f"{seconds:.1f}s"
+        minutes = int(seconds // 60)
+        secs = seconds % 60
+        if minutes < 60:
+            return f"{minutes}m {secs:.0f}s"
+        hours = int(minutes // 60)
+        mins = minutes % 60
+        return f"{hours}h {mins}m"
 
     # ── Directory setup ───────────────────────────────────────────────
 
