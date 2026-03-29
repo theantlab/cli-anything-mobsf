@@ -47,7 +47,15 @@ cli-anything-mobsf analyse ./app.apk --skip appshield --skip repackage
 
 # Custom output directory and SDK version
 cli-anything-mobsf analyse ./app.apk -o ./results -v 34.0.0
+
+# Limit RAM usage per subprocess (default: 4096 MB)
+cli-anything-mobsf analyse ./app.apk --max-ram 2048
 ```
+
+Resource limits are applied automatically to keep the desktop responsive:
+- **JADX** is capped at 2 GB heap with 2 threads (previously unlimited)
+- All subprocesses run at reduced CPU priority (`nice 10`)
+- Per-subprocess virtual memory is capped at `--max-ram` (default 4 GB)
 
 The pipeline displays a progress bar with per-stage timing:
 

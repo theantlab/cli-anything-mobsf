@@ -2,9 +2,15 @@
 import json
 import os
 import re
+import resource
 import subprocess
 from collections import defaultdict
 from pathlib import Path
+
+
+def _preexec_nice():
+    """Lower CPU priority for grep subprocesses."""
+    os.nice(10)
 
 # ── Categorised search patterns ───────────────────────────────────────
 # Each category maps to a list of (pattern, description) tuples.
@@ -530,6 +536,7 @@ def _grep_smali(smali_root, pattern):
         result = subprocess.run(
             ["grep", "-rFn", "--include=*.smali", pattern, str(smali_root)],
             capture_output=True, text=True, timeout=30,
+            preexec_fn=_preexec_nice,
         )
         if result.stdout:
             for line in result.stdout.strip().split("\n"):

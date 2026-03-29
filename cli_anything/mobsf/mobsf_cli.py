@@ -463,8 +463,10 @@ SKIP_CHOICES = ["mobsf", "decompiled", "apkid", "native", "apktool",
 @click.option("-v", "--sdk-version", default="31.0.0", help="Android SDK Build Tools version.")
 @click.option("--abi", multiple=True, default=["arm64-v8a", "armeabi-v7a"], help="Target ABIs (repeatable).")
 @click.option("--skip", multiple=True, type=click.Choice(SKIP_CHOICES), help="Stages to skip (repeatable).")
+@click.option("--max-ram", default=4096, type=int, show_default=True,
+              help="Max RAM per subprocess in MB (prevents system resource exhaustion).")
 @click.pass_context
-def analyse(ctx, apk_path, output_dir, sdk_version, abi, skip):
+def analyse(ctx, apk_path, output_dir, sdk_version, abi, skip, max_ram):
     """Run full app analysis pipeline (MobSF + local toolchain).
 
     Produces a single analysis directory with MobSF reports, decompiled
@@ -482,6 +484,7 @@ def analyse(ctx, apk_path, output_dir, sdk_version, abi, skip):
         backend=backend,
         skip=list(skip),
         echo=click.echo,
+        max_ram_mb=max_ram,
     )
     pipeline.run()
 

@@ -103,3 +103,22 @@ cli-anything-mobsf --json report --hash <md5>
 | `use --hash` | Set active scan |
 | `status` | Show session state |
 | `undo` / `redo` | Session state undo/redo |
+
+## Resource Limits
+
+The `analyse` command enforces resource limits to prevent the pipeline from consuming all system resources:
+
+| Control | Default | Description |
+|---------|---------|-------------|
+| `--max-ram` | 4096 | Max virtual memory per subprocess (MB) |
+| JADX heap | 2048 MB | Java heap cap via `-Xmx` |
+| JADX threads | 2 | Limits JADX parallelism (`--threads-count`) |
+| CPU priority | nice 10 | All subprocesses run at reduced priority |
+
+Example — run analysis with tighter memory limits:
+
+```bash
+cli-anything-mobsf analyse ./app.apk --max-ram 2048
+```
+
+These defaults can be adjusted via class constants in `AnalysisPipeline` (`JADX_MAX_RAM_MB`, `JADX_THREADS`, `DEFAULT_MAX_RAM_MB`, `NICE_LEVEL`).

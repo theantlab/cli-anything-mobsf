@@ -1,6 +1,7 @@
 """Full app analysis pipeline — MobSF + local toolchain."""
 import json
 import os
+import resource
 import shutil
 import subprocess
 import time
@@ -18,8 +19,15 @@ ATTACK_KEYSTORE = Path.home() / ".android" / "attack.jks"
 class AnalysisPipeline:
     """Orchestrates the full analysis workflow."""
 
+    # Default resource limits
+    DEFAULT_MAX_RAM_MB = 4096        # 4 GB per subprocess
+    JADX_MAX_RAM_MB = 2048           # 2 GB for JADX (Java heap)
+    JADX_THREADS = 2                 # Limit JADX parallelism
+    NICE_LEVEL = 10                  # Lower CPU priority (0=normal, 19=lowest)
+
     def __init__(self, apk_path, output_dir=None, sdk_version="31.0.0",
-                 abis=None, backend=None, skip=None, echo=None):
+                 abis=None, backend=None, skip=None, echo=None,
+                 max_ram_mb=None):
         self.apk_path = Path(apk_path).resolve()
         if not self.apk_path.is_file():
             raise FileNotFoundError(f"APK not found: {self.apk_path}")
@@ -31,6 +39,7 @@ class AnalysisPipeline:
         self.backend = backend
         self.skip = set(skip or [])
         self.echo = echo or print
+        self.max_ram_mb = max_ram_mb or self.DEFAULT_MAX_RAM_MB
         self.scan_hash = None
         self.started_at = datetime.now(timezone.utc)
         self.stage_results = {}
@@ -142,11 +151,25 @@ class AnalysisPipeline:
         for d in dirs:
             d.mkdir(parents=True, exist_ok=True)
 
-    def _run(self, cmd, cwd=None, check=True):
-        """Run a shell command and return CompletedProcess."""
+    def _make_preexec(self, mem_limit_mb=None):
+        """Return a preexec_fn that sets nice level and memory limit."""
+        nice = self.NICE_LEVEL
+        limit_bytes = (mem_limit_mb or self.max_ram_mb) * 1024 * 1024
+
+        def _preexec():
+            # Lower CPU priority so desktop stays responsive
+            os.nice(nice)
+            # Cap virtual memory to prevent runaway allocation
+            resource.setrlimit(resource.RLIMIT_AS, (limit_bytes, limit_bytes))
+
+        return _preexec
+
+    def _run(self, cmd, cwd=None, check=True, mem_limit_mb=None):
+        """Run a shell command with resource limits and return CompletedProcess."""
         result = subprocess.run(
             cmd, cwd=cwd, capture_output=True, text=True,
             shell=isinstance(cmd, str),
+            preexec_fn=self._make_preexec(mem_limit_mb),
         )
         if check and result.returncode != 0:
             raise RuntimeError(f"Command failed ({result.returncode}): {cmd}\n{result.stderr[:500]}")
@@ -197,14 +220,30 @@ class AnalysisPipeline:
 
     def _stage_jadx(self):
         dec_dir = self.output_dir / "decompiled"
-        self.echo("    Decompiling with JADX...")
-        self._run([
-            "jadx",
-            "-d", str(dec_dir),
-            "-ds", str(dec_dir / "src"),
-            "-dr", str(dec_dir / "res"),
-            str(self.apk_path),
-        ])
+        heap_mb = self.JADX_MAX_RAM_MB
+        threads = self.JADX_THREADS
+        self.echo(f"    Decompiling with JADX (heap={heap_mb}M, threads={threads})...")
+        env = os.environ.copy()
+        # JADX reads JAVA_OPTS / _JAVA_OPTIONS for JVM flags
+        jvm_flags = f"-Xmx{heap_mb}m -Xms256m"
+        env["JAVA_OPTS"] = jvm_flags
+        env["_JAVA_OPTIONS"] = jvm_flags
+        result = subprocess.run(
+            [
+                "jadx",
+                "--threads-count", str(threads),
+                "-d", str(dec_dir),
+                "-ds", str(dec_dir / "src"),
+                "-dr", str(dec_dir / "res"),
+                str(self.apk_path),
+            ],
+            cwd=None, capture_output=True, text=True, env=env,
+            preexec_fn=self._make_preexec(mem_limit_mb=heap_mb + 512),
+        )
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"JADX failed ({result.returncode}):\n{result.stderr[:500]}"
+            )
 
     # ── Stage: Local APKiD ────────────────────────────────────────────
 

@@ -69,6 +69,7 @@ The system follows a layered architecture:
 - **Graceful degradation** — missing tools cause individual stage failures, not pipeline failures. Each stage is wrapped in a try/except and recorded in the summary.
 - **Self-contained packaging** — all helper scripts and dictionaries are bundled inside the Python package. No external script paths required.
 - **Dual-mode operation** — every feature works both as a one-shot CLI command and within the interactive REPL.
+- **Resource-aware execution** — all subprocesses run at reduced CPU priority (`nice`) with capped virtual memory (`RLIMIT_AS`). JADX gets additional JVM heap and thread limits. This prevents the pipeline from starving the desktop or triggering the OOM killer.
 
 ### Analysis Pipeline
 
@@ -284,10 +285,24 @@ Orchestrates the 8-stage pipeline. Constructor accepts:
 - `backend` — MobSFBackend instance for API calls
 - `skip` — set of stage names to skip
 - `echo` — output function (default: print, Click passes click.echo)
+- `max_ram_mb` — maximum virtual memory per subprocess in MB (default: 4096)
 
 Each stage method (`_stage_mobsf`, `_stage_jadx`, etc.) is independently try/caught. Failures are recorded in `stage_results` (including per-stage duration) but do not halt the pipeline.
 
-The `_run()` helper executes shell commands via `subprocess.run()` with capture and optional directory context.
+The `_run()` helper executes shell commands via `subprocess.run()` with capture, optional directory context, and resource limits. Every subprocess is launched with a `preexec_fn` that:
+1. Calls `os.nice(NICE_LEVEL)` to lower CPU priority (default: 10) so the desktop remains responsive
+2. Sets `RLIMIT_AS` to cap virtual memory and prevent runaway allocation
+
+**Class-level resource constants:**
+
+| Constant | Default | Description |
+|----------|---------|-------------|
+| `DEFAULT_MAX_RAM_MB` | 4096 | Virtual memory cap for general subprocesses |
+| `JADX_MAX_RAM_MB` | 2048 | Java heap limit for JADX (`-Xmx`) |
+| `JADX_THREADS` | 2 | Thread count passed to JADX (`--threads-count`) |
+| `NICE_LEVEL` | 10 | CPU scheduling priority (0 = normal, 19 = lowest) |
+
+JADX receives special treatment because it is the heaviest consumer: its JVM heap is capped via `JAVA_OPTS`/`_JAVA_OPTIONS` environment variables, thread count is limited, and its RLIMIT_AS is set to `JADX_MAX_RAM_MB + 512 MB` (headroom for JVM overhead beyond heap).
 
 **Progress indicator:**
 
@@ -330,7 +345,7 @@ The `scan_attack_surface()` function:
 4. Groups matches by file, sorts by count
 5. Writes three output files: summary, full report, JSON
 
-Performance note: runs one grep per pattern (~270 greps). For a typical APK with 10,000 smali files this takes 30-90 seconds. The 30-second per-grep timeout prevents hangs on very large codebases.
+Performance note: runs one grep per pattern (~270 greps). For a typical APK with 10,000 smali files this takes 30-90 seconds. The 30-second per-grep timeout prevents hangs on very large codebases. Each grep subprocess runs at reduced CPU priority (`nice 10`) to avoid starving the desktop.
 
 #### `core/objection_patcher.py` — `ObjectionPatcher`
 
@@ -587,6 +602,9 @@ cli-anything-mobsf analyse ./app.apk -v 34.0.0
 
 # Specify target ABIs
 cli-anything-mobsf analyse ./app.apk --abi arm64-v8a
+
+# Limit RAM per subprocess (default: 4096 MB)
+cli-anything-mobsf analyse ./app.apk --max-ram 2048
 ```
 
 After completion, key files to review:

@@ -1,9 +1,21 @@
 """Intelligent Objection patching guided by analysis artifacts."""
 import json
 import os
+import resource
 import shutil
 import subprocess
 from pathlib import Path
+
+# Resource limits for subprocesses
+_NICE_LEVEL = 10
+_MEM_LIMIT_MB = 4096
+
+
+def _preexec_limits():
+    """Lower CPU priority and cap memory for subprocesses."""
+    os.nice(_NICE_LEVEL)
+    limit_bytes = _MEM_LIMIT_MB * 1024 * 1024
+    resource.setrlimit(resource.RLIMIT_AS, (limit_bytes, limit_bytes))
 
 
 class ObjectionPatcher:
@@ -132,7 +144,8 @@ class ObjectionPatcher:
         )
 
         self.echo(f"  Running: {' '.join(cmd)}")
-        result = subprocess.run(cmd, cwd=str(output_dir), capture_output=True, text=True)
+        result = subprocess.run(cmd, cwd=str(output_dir), capture_output=True, text=True,
+                                preexec_fn=_preexec_limits)
 
         (output_dir / "objection_stdout.txt").write_text(result.stdout)
         (output_dir / "objection_stderr.txt").write_text(result.stderr)
@@ -582,7 +595,8 @@ class ObjectionPatcher:
     def _get_frida_version(self):
         """Get installed Frida version."""
         try:
-            result = subprocess.run(["frida", "--version"], capture_output=True, text=True)
+            result = subprocess.run(["frida", "--version"], capture_output=True, text=True,
+                                    preexec_fn=_preexec_limits)
             version = result.stdout.strip()
             if version:
                 return version
