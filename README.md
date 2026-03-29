@@ -45,17 +45,18 @@ cli-anything-mobsf analyse ./app.apk
 # Skip stages you don't need
 cli-anything-mobsf analyse ./app.apk --skip appshield --skip repackage
 
-# Custom output directory and SDK version
-cli-anything-mobsf analyse ./app.apk -o ./results -v 34.0.0
+# Custom output directory and SDK version (auto-detected if omitted)
+cli-anything-mobsf analyse ./app.apk -o ./results -v 35.0.0
 
-# Limit RAM usage per subprocess (default: 4096 MB)
-cli-anything-mobsf analyse ./app.apk --max-ram 2048
+# Limit RAM usage per subprocess (default: 8192 MB)
+cli-anything-mobsf analyse ./app.apk --max-ram 4096
 ```
 
 Resource limits are applied automatically to keep the desktop responsive:
-- **JADX** is capped at 2 GB heap with 2 threads (previously unlimited)
+- **JADX** is capped at 4 GB heap with 2 threads
 - All subprocesses run at reduced CPU priority (`nice 10`)
-- Per-subprocess virtual memory is capped at `--max-ram` (default 4 GB)
+- Per-subprocess heap growth is capped at `--max-ram` via `RLIMIT_DATA` (default 8 GB)
+- Android SDK build-tools version is auto-detected from `$ANDROID_SDK/build-tools/`
 
 The pipeline displays a progress bar with per-stage timing:
 

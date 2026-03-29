@@ -110,15 +110,20 @@ The `analyse` command enforces resource limits to prevent the pipeline from cons
 
 | Control | Default | Description |
 |---------|---------|-------------|
-| `--max-ram` | 4096 | Max virtual memory per subprocess (MB) |
-| JADX heap | 2048 MB | Java heap cap via `-Xmx` |
+| `--max-ram` | 8192 | Max heap growth per subprocess via `RLIMIT_DATA` (MB) |
+| JADX heap | 4096 MB | Java heap cap via `-Xmx` |
 | JADX threads | 2 | Limits JADX parallelism (`--threads-count`) |
 | CPU priority | nice 10 | All subprocesses run at reduced priority |
+| SDK version | auto-detected | Picks latest installed from `$ANDROID_SDK/build-tools/` |
+
+`RLIMIT_DATA` is used instead of `RLIMIT_AS` because JVM-based tools (JADX, apktool) map far more virtual address space than they actually consume. `RLIMIT_AS` would kill them prematurely.
+
+JADX exit code 1 (non-fatal decompilation errors) is treated as success — this is normal for large or obfuscated APKs.
 
 Example — run analysis with tighter memory limits:
 
 ```bash
-cli-anything-mobsf analyse ./app.apk --max-ram 2048
+cli-anything-mobsf analyse ./app.apk --max-ram 4096
 ```
 
 These defaults can be adjusted via class constants in `AnalysisPipeline` (`JADX_MAX_RAM_MB`, `JADX_THREADS`, `DEFAULT_MAX_RAM_MB`, `NICE_LEVEL`).
