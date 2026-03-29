@@ -415,39 +415,38 @@ class AnalysisPipeline:
             self.echo("    apktool output directory not found")
             return
 
-        # classcountm.sh
+        # Count app classes (smali files, excluding framework packages)
         self.echo("    Counting classes...")
-        result = self._run(
-            [str(script_path("classcountm.sh"))],
-            cwd=str(smali_dir), check=False,
-        )
-        (apktool_dir / "classcount.txt").write_text(result.stdout)
+        exclude_dirs = {"android", "androidx", "kotlin", "kotlinx", "javax"}
+        class_count = 0
+        for smali_subdir in smali_dir.glob("smali*"):
+            if not smali_subdir.is_dir():
+                continue
+            for smali_file in smali_subdir.rglob("*.smali"):
+                # Check if any path component is a framework package
+                parts = smali_file.relative_to(smali_subdir).parts
+                if parts and parts[0] not in exclude_dirs and \
+                   not (len(parts) > 1 and parts[0] == "com" and parts[1] == "google"):
+                    class_count += 1
+        (apktool_dir / "classcount.txt").write_text(str(class_count))
+        self.echo(f"    {class_count} app classes (excl. framework)")
 
-        # libcount.sh
-        self.echo("    Counting libraries...")
-        result = self._run(
-            [str(script_path("libcount.sh"))],
-            cwd=str(smali_dir), check=False,
-        )
-        (apktool_dir / "libcount.txt").write_text(result.stdout)
+        # Count unique native libraries
+        lib_dir = smali_dir / "lib"
+        if lib_dir.is_dir():
+            unique_libs = set()
+            for so_file in lib_dir.rglob("*.so"):
+                unique_libs.add(so_file.name)
+            lib_count = len(unique_libs)
+            abis = sorted(d.name for d in lib_dir.iterdir() if d.is_dir())
+            (apktool_dir / "libcount.txt").write_text(
+                f"{lib_count} unique libraries across {len(abis)} ABIs: {', '.join(abis)}")
+            self.echo(f"    {lib_count} unique native libraries ({', '.join(abis)})")
+        else:
+            (apktool_dir / "libcount.txt").write_text("0")
+            self.echo("    No native libraries")
 
-        # searchstrings.sh
-        searchstrings_dic = dictionary_path()
-        if searchstrings_dic.is_file():
-            self.echo("    Running API grep...")
-            result = self._run(
-                [str(script_path("searchstrings.sh")), str(searchstrings_dic)],
-                cwd=str(smali_dir), check=False,
-            )
-            (apktool_dir / "searchstrings.txt").write_text(result.stdout)
-
-            result = self._run(
-                [str(script_path("searchstringswithfilenames.sh")), str(searchstrings_dic)],
-                cwd=str(smali_dir), check=False,
-            )
-            (apktool_dir / "searchstringswithfilenames.txt").write_text(result.stdout)
-
-        # Attack surface analysis
+        # Attack surface analysis (replaces searchstrings.sh)
         self.echo("    Running attack surface analysis...")
         attack_surface_dir = self.output_dir / "attack_surface"
         scan_attack_surface(smali_dir, attack_surface_dir)
