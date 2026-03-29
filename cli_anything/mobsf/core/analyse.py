@@ -182,13 +182,17 @@ class AnalysisPipeline:
 
         return _preexec
 
-    def _run(self, cmd, cwd=None, check=True, mem_limit_mb=None):
+    def _run(self, cmd, cwd=None, check=True, mem_limit_mb=None, timeout=None):
         """Run a shell command with resource limits and return CompletedProcess."""
-        result = subprocess.run(
-            cmd, cwd=cwd, capture_output=True, text=True,
-            shell=isinstance(cmd, str),
-            preexec_fn=self._make_preexec(mem_limit_mb),
-        )
+        try:
+            result = subprocess.run(
+                cmd, cwd=cwd, capture_output=True, text=True,
+                shell=isinstance(cmd, str),
+                timeout=timeout,
+                preexec_fn=self._make_preexec(mem_limit_mb),
+            )
+        except subprocess.TimeoutExpired:
+            raise RuntimeError(f"Command timed out after {timeout}s: {cmd}")
         if check and result.returncode != 0:
             raise RuntimeError(f"Command failed ({result.returncode}): {cmd}\n{result.stderr[:500]}")
         return result
@@ -280,59 +284,115 @@ class AnalysisPipeline:
 
     # ── Stage: Native library analysis ────────────────────────────────
 
+    # ABI preference order for native analysis — only analyse one ABI
+    # since the .so files are identical across ABIs (just compiled for
+    # different architectures).  ARM ABIs are what matters for mobile.
+    _ABI_PREFERENCE = ["arm64-v8a", "armeabi-v7a", "x86_64", "x86"]
+
     def _stage_native(self):
-        # Look for native libs in decompiled resources or extract from APK
-        lib_dir = self.output_dir / "decompiled" / "res" / "lib"
-        if not lib_dir.is_dir():
-            # Try apktool output
-            lib_dir = self.output_dir / "apktool" / self.apk_name / "lib"
-        if not lib_dir.is_dir():
+        # Extract native libs directly from APK — don't depend on JADX/apktool
+        import zipfile
+        lib_dir = self.output_dir / "native" / "lib"
+
+        # Discover available ABIs without extracting everything
+        available_abis = set()
+        try:
+            with zipfile.ZipFile(str(self.apk_path), 'r') as zf:
+                so_entries = [n for n in zf.namelist()
+                              if n.startswith("lib/") and n.endswith(".so")]
+                for entry in so_entries:
+                    # entry format: lib/<abi>/<name>.so
+                    parts = entry.split("/")
+                    if len(parts) >= 3:
+                        available_abis.add(parts[1])
+        except Exception as e:
+            self.echo(f"    Failed to read APK: {e}")
+            return
+
+        if not available_abis:
             self.echo("    No native libraries found, skipping")
             return
 
+        # Pick the best ABI to analyse
+        target_abi = None
+        for abi in self._ABI_PREFERENCE:
+            if abi in available_abis:
+                target_abi = abi
+                break
+        if not target_abi:
+            target_abi = sorted(available_abis)[0]
+
+        self.echo(f"    Available ABIs: {sorted(available_abis)}")
+        self.echo(f"    Analysing: {target_abi}")
+
+        # Extract only the target ABI
+        prefix = f"lib/{target_abi}/"
+        try:
+            with zipfile.ZipFile(str(self.apk_path), 'r') as zf:
+                for entry in so_entries:
+                    if entry.startswith(prefix):
+                        target = lib_dir / entry[len("lib/"):]
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        with zf.open(entry) as src, open(target, 'wb') as dst:
+                            shutil.copyfileobj(src, dst)
+        except Exception as e:
+            self.echo(f"    Failed to extract native libs: {e}")
+            return
+
         native_dir = self.output_dir / "native"
-        for arch_dir in sorted(lib_dir.iterdir()):
-            if not arch_dir.is_dir():
-                continue
-            arch = arch_dir.name
-            self.echo(f"    Analysing {arch} libraries...")
+        arch_dir = lib_dir / target_abi
+        if not arch_dir.is_dir():
+            return
+        arch = target_abi
 
-            for subdir in ["elf", "binwalk_signature", "binwalk_entropy", "strings"]:
-                (native_dir / subdir / arch).mkdir(parents=True, exist_ok=True)
+        for subdir in ["elf", "binwalk_signature", "binwalk_entropy", "strings"]:
+            (native_dir / subdir / arch).mkdir(parents=True, exist_ok=True)
 
-            for so_file in sorted(arch_dir.glob("*.so")):
-                name = so_file.name
-                self.echo(f"      {name}")
+        so_files = sorted(arch_dir.glob("*.so"))
+        self.echo(f"    {len(so_files)} libraries to analyse")
 
-                # readelf
-                result = self._run(["readelf", "-a", str(so_file)], check=False)
-                (native_dir / "elf" / arch / f"{name}.readelf").write_text(result.stdout)
+        for so_file in so_files:
+            name = so_file.name
+            self.echo(f"      {name}")
 
-                # binwalk signature
-                result = self._run([
-                    "binwalk", "--signature", "--term",
+            # readelf
+            result = self._run(["readelf", "-a", str(so_file)], check=False)
+            (native_dir / "elf" / arch / f"{name}.readelf").write_text(result.stdout)
+
+            # binwalk signature (60s timeout for very large .so files)
+            try:
+                self._run([
+                    "binwalk", "--signature",
                     f"--log={native_dir / 'binwalk_signature' / arch / f'{name}.binwalk_signature'}",
                     str(so_file),
-                ], check=False)
+                ], check=False, timeout=60)
+            except RuntimeError:
+                self.echo(f"        binwalk signature timed out, skipping")
 
-                # binwalk entropy
-                result = self._run([
+            # binwalk entropy
+            try:
+                self._run([
                     "binwalk", "--entropy", "--verbose", "--nplot",
                     "--high", ".7", "--low", ".3",
                     f"--log={native_dir / 'binwalk_entropy' / arch / f'{name}.binwalk_entropy'}",
                     str(so_file),
-                ], check=False)
+                ], check=False, timeout=30)
+            except RuntimeError:
+                self.echo(f"        binwalk entropy timed out, skipping")
 
-                # binwalk entropy plot
+            # binwalk entropy plot
+            try:
                 self._run([
                     "binwalk", "--entropy",
                     "--high", ".7", "--low", ".3",
                     "--save", str(so_file),
-                ], cwd=str(native_dir / "binwalk_entropy" / arch), check=False)
+                ], cwd=str(native_dir / "binwalk_entropy" / arch), check=False, timeout=30)
+            except RuntimeError:
+                pass  # plot is non-essential
 
-                # strings
-                result = self._run(["strings", str(so_file)], check=False)
-                (native_dir / "strings" / arch / f"{name}.strings").write_text(result.stdout)
+            # strings
+            result = self._run(["strings", str(so_file)], check=False)
+            (native_dir / "strings" / arch / f"{name}.strings").write_text(result.stdout)
 
     # ── Stage: APKtool + code analysis ────────────────────────────────
 
