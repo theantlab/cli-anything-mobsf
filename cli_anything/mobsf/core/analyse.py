@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from cli_anything.mobsf.core.attack_surface import scan_attack_surface
+from cli_anything.mobsf.core.native_attack_surface import analyse_native_libs
 from cli_anything.mobsf.core.objection_patcher import ObjectionPatcher
 from cli_anything.mobsf.scripts import script_path, dictionary_path
 
@@ -393,6 +394,11 @@ class AnalysisPipeline:
             # strings
             result = self._run(["strings", str(so_file)], check=False)
             (native_dir / "strings" / arch / f"{name}.strings").write_text(result.stdout)
+
+        # Run native attack surface analysis on the collected data
+        self.echo("    Running native attack surface analysis...")
+        analyse_native_libs(native_dir, native_dir / "attack_surface")
+        self.echo("    Native attack surface reports written")
 
     # ── Stage: APKtool + code analysis ────────────────────────────────
 
