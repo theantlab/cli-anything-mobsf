@@ -16,16 +16,28 @@ from cli_anything.mobsf.scripts import script_path, dictionary_path
 ATTACK_KEYSTORE = Path.home() / ".android" / "attack.jks"
 
 
+def _detect_sdk_version():
+    """Return the latest installed Android SDK build-tools version, or None."""
+    bt_dir = Path(os.environ.get("ANDROID_SDK", Path.home() / "Android" / "Sdk")) / "build-tools"
+    if not bt_dir.is_dir():
+        return None
+    versions = sorted(
+        (d.name for d in bt_dir.iterdir() if d.is_dir()),
+        key=lambda v: [int(x) for x in v.split(".") if x.isdigit()],
+    )
+    return versions[-1] if versions else None
+
+
 class AnalysisPipeline:
     """Orchestrates the full analysis workflow."""
 
     # Default resource limits
-    DEFAULT_MAX_RAM_MB = 4096        # 4 GB per subprocess
-    JADX_MAX_RAM_MB = 2048           # 2 GB for JADX (Java heap)
+    DEFAULT_MAX_RAM_MB = 8192        # 8 GB per subprocess (virtual address space)
+    JADX_MAX_RAM_MB = 4096           # 4 GB for JADX (Java heap)
     JADX_THREADS = 2                 # Limit JADX parallelism
     NICE_LEVEL = 10                  # Lower CPU priority (0=normal, 19=lowest)
 
-    def __init__(self, apk_path, output_dir=None, sdk_version="31.0.0",
+    def __init__(self, apk_path, output_dir=None, sdk_version=None,
                  abis=None, backend=None, skip=None, echo=None,
                  max_ram_mb=None):
         self.apk_path = Path(apk_path).resolve()
@@ -34,7 +46,7 @@ class AnalysisPipeline:
 
         self.apk_name = self.apk_path.stem
         self.output_dir = Path(output_dir) if output_dir else Path.cwd() / f"{self.apk_name}_analysis"
-        self.sdk_version = sdk_version
+        self.sdk_version = sdk_version or _detect_sdk_version() or "35.0.0"
         self.abis = abis or ["arm64-v8a", "armeabi-v7a"]
         self.backend = backend
         self.skip = set(skip or [])
@@ -152,15 +164,21 @@ class AnalysisPipeline:
             d.mkdir(parents=True, exist_ok=True)
 
     def _make_preexec(self, mem_limit_mb=None):
-        """Return a preexec_fn that sets nice level and memory limit."""
+        """Return a preexec_fn that sets nice level and memory limit.
+
+        Uses RLIMIT_DATA instead of RLIMIT_AS because JVM-based tools
+        (JADX, apktool) map far more virtual address space than they
+        actually consume.  RLIMIT_AS kills them prematurely; RLIMIT_DATA
+        constrains real heap growth without blocking mmap regions.
+        """
         nice = self.NICE_LEVEL
         limit_bytes = (mem_limit_mb or self.max_ram_mb) * 1024 * 1024
 
         def _preexec():
             # Lower CPU priority so desktop stays responsive
             os.nice(nice)
-            # Cap virtual memory to prevent runaway allocation
-            resource.setrlimit(resource.RLIMIT_AS, (limit_bytes, limit_bytes))
+            # Cap data segment (heap) growth
+            resource.setrlimit(resource.RLIMIT_DATA, (limit_bytes, limit_bytes))
 
         return _preexec
 
@@ -228,6 +246,8 @@ class AnalysisPipeline:
         jvm_flags = f"-Xmx{heap_mb}m -Xms256m"
         env["JAVA_OPTS"] = jvm_flags
         env["_JAVA_OPTIONS"] = jvm_flags
+        # JVM virtual memory usage far exceeds -Xmx (mapped libs, thread stacks,
+        # code cache, etc.).  Give RLIMIT_AS ~3x the heap to avoid SIGABRT.
         result = subprocess.run(
             [
                 "jadx",
@@ -238,12 +258,17 @@ class AnalysisPipeline:
                 str(self.apk_path),
             ],
             cwd=None, capture_output=True, text=True, env=env,
-            preexec_fn=self._make_preexec(mem_limit_mb=heap_mb + 512),
+            preexec_fn=self._make_preexec(mem_limit_mb=heap_mb * 3),
         )
-        if result.returncode != 0:
+        # JADX returns exit code 1 when it finishes with non-fatal decompilation
+        # errors (common on large/obfuscated APKs).  Only treat exit code >= 2 or
+        # negative (signal kill) as a hard failure.
+        if result.returncode != 0 and result.returncode != 1:
             raise RuntimeError(
                 f"JADX failed ({result.returncode}):\n{result.stderr[:500]}"
             )
+        if result.returncode == 1:
+            self.echo("    JADX finished with non-fatal errors (normal for large APKs)")
 
     # ── Stage: Local APKiD ────────────────────────────────────────────
 
@@ -317,7 +342,7 @@ class AnalysisPipeline:
         shutil.copy2(self.apk_path, apk_copy)
 
         self.echo("    Disassembling with apktool...")
-        self._run(["apktool", "d", str(apk_copy)], cwd=str(apktool_dir))
+        self._run(["apktool", "d", "-f", str(apk_copy)], cwd=str(apktool_dir))
 
         smali_dir = apktool_dir / self.apk_name
         if not smali_dir.is_dir():

@@ -460,7 +460,7 @@ SKIP_CHOICES = ["mobsf", "decompiled", "apkid", "native", "apktool",
 @cli.command()
 @click.argument("apk_path", type=click.Path(exists=True))
 @click.option("-o", "--output", "output_dir", default=None, help="Output directory (default: <apk_name>_analysis/).")
-@click.option("-v", "--sdk-version", default="31.0.0", help="Android SDK Build Tools version.")
+@click.option("-v", "--sdk-version", default=None, help="Android SDK Build Tools version (auto-detected if omitted).")
 @click.option("--abi", multiple=True, default=["arm64-v8a", "armeabi-v7a"], help="Target ABIs (repeatable).")
 @click.option("--skip", multiple=True, type=click.Choice(SKIP_CHOICES), help="Stages to skip (repeatable).")
 @click.option("--max-ram", default=4096, type=int, show_default=True,
