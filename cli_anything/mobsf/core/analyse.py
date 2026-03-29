@@ -417,18 +417,61 @@ class AnalysisPipeline:
 
     # ── Stage: AppShield / APK Defender ───────────────────────────────
 
+    @staticmethod
+    def _extract_signing_cert(apk_path, output_dir):
+        """Extract the signing certificate from an APK for AppShield config.
+
+        Extracts META-INF/*.RSA|DSA|EC from the APK and converts to PEM
+        via openssl.  Returns the path to the extracted .pem file, or None.
+        """
+        import zipfile
+
+        cert_pem = output_dir / "signing-certificate.pem"
+        if cert_pem.is_file():
+            return cert_pem
+
+        try:
+            with zipfile.ZipFile(str(apk_path), 'r') as zf:
+                for name in zf.namelist():
+                    if name.startswith("META-INF/") and name.split(".")[-1] in ("RSA", "DSA", "EC"):
+                        cert_data = zf.read(name)
+                        cert_der = output_dir / "signing-certificate.der"
+                        cert_der.write_bytes(cert_data)
+                        # Convert PKCS#7 to PEM via openssl
+                        conv = subprocess.run(
+                            ["openssl", "pkcs7", "-inform", "DER", "-print_certs",
+                             "-in", str(cert_der), "-out", str(cert_pem)],
+                            capture_output=True, text=True,
+                        )
+                        if conv.returncode == 0 and cert_pem.is_file() and cert_pem.stat().st_size > 0:
+                            cert_der.unlink(missing_ok=True)
+                            return cert_pem
+                        cert_der.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+        return None
+
     def _stage_appshield(self):
         appshield_dir = self.output_dir / "appshield"
+        # Clean stale configs from prior runs so new-config generates fresh
+        for stale in appshield_dir.glob("*-example-configuration.json"):
+            stale.unlink()
+        (appshield_dir / "config.json").unlink(missing_ok=True)
         apk_copy = appshield_dir / self.apk_path.name
         shutil.copy2(self.apk_path, apk_copy)
 
-        # Copy signing materials from alongside the APK or known locations
+        # Copy signing materials: prefer files alongside the APK, fall back
+        # to bundled defaults (generic keystore for analysis builds).
         for fname in ["certificate.x509.pem", "keystore.jks", "keystoreinfo.json"]:
             src = self.apk_path.parent / fname
+            if not src.is_file():
+                src = script_path(fname)
             if src.is_file():
                 shutil.copy2(src, appshield_dir / fname)
 
         self.echo("    Generating APK Defender config...")
+        # apkdefender new-config writes to CWD, not -w dir — run from appshield_dir
         self._run(
             ["apkdefender", "-b", "new-config", str(apk_copy)],
             cwd=str(appshield_dir), check=False,
@@ -437,27 +480,64 @@ class AnalysisPipeline:
         config_file = appshield_dir / f"{self.apk_name}-example-configuration.json"
         if config_file.is_file():
             self.echo("    Patching config...")
-            lines = config_file.read_text().splitlines()
+            raw = config_file.read_text()
 
-            # Remove first 16 lines (boilerplate header)
-            if len(lines) > 16:
-                lines = lines[16:]
+            # Strip header: find the marker line and take everything after it
+            marker = "REMOVE THIS LINE AND THE ONES ABOVE IT"
+            lines = raw.splitlines()
+            json_start = 0
+            for i, line in enumerate(lines):
+                if marker in line:
+                    json_start = i + 1
+                    break
+            else:
+                # No marker found — try to find first '{' line
+                for i, line in enumerate(lines):
+                    if line.strip().startswith("{"):
+                        json_start = i
+                        break
 
-            text = "\n".join(lines)
+            text = "\n".join(lines[json_start:])
 
-            # Insert abis config and fix signing certificate references
-            import re
-            abis_str = json.dumps(self.abis)
-            # Insert abis after first opening brace block
-            text = text.replace(
-                '"abis":', f'"abis": {abis_str},', 1
-            ) if '"abis":' in text else text
+            # Patch signing certificate: prefer bundled/copied cert, then extract from APK
+            cert_path = None
+            for candidate in [
+                appshield_dir / "certificate.x509.pem",
+                appshield_dir / "signing-certificate.pem",
+            ]:
+                if candidate.is_file():
+                    cert_path = str(candidate)
+                    break
+
+            if not cert_path:
+                self.echo("    Extracting signing certificate from APK...")
+                extracted = self._extract_signing_cert(self.apk_path, appshield_dir)
+                if extracted:
+                    cert_path = str(extracted)
+                    self.echo(f"    Extracted: {extracted.name}")
+
+            if cert_path:
+                text = text.replace("path/to/signing-certificate.crt", cert_path)
+            else:
+                self.echo("    Warning: no signing certificate found — AppShield build will fail")
+
+            # Inject keystore configuration file reference if available
+            ksinfo_file = appshield_dir / "keystoreinfo.json"
+            if ksinfo_file.is_file():
+                try:
+                    config_obj = json.loads(text)
+                    gen = config_obj.get("general_configuration", {})
+                    gen["keystore_configuration_file"] = str(ksinfo_file)
+                    text = json.dumps(config_obj, indent=4)
+                    self.echo("    Injected keystore configuration")
+                except Exception as e:
+                    self.echo(f"    Warning: failed to inject keystore config: {e}")
 
             config_file.write_text(text)
             (appshield_dir / "config.json").write_text(text)
 
             self.echo("    Building protected APK...")
-            self._run(
+            result = self._run(
                 [
                     "apkdefender",
                     "-c", str(config_file),
@@ -466,6 +546,17 @@ class AnalysisPipeline:
                 ],
                 cwd=str(appshield_dir), check=False,
             )
+            # Check for actual build failure via log
+            log_file = appshield_dir / "apkdefender.log"
+            if log_file.is_file():
+                log_text = log_file.read_text()
+                if "ERROR" in log_text:
+                    errors = [l for l in log_text.splitlines() if "ERROR" in l]
+                    raise RuntimeError(
+                        f"AppShield build failed:\n" + "\n".join(errors[:5])
+                    )
+        else:
+            raise RuntimeError("apkdefender new-config did not produce a config file")
 
     # ── Stage: Objection patch ────────────────────────────────────────
 

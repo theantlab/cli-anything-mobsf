@@ -8,14 +8,29 @@ from pathlib import Path
 
 # Resource limits for subprocesses
 _NICE_LEVEL = 10
-_MEM_LIMIT_MB = 4096
+_MEM_LIMIT_MB = 8192
 
 
 def _preexec_limits():
     """Lower CPU priority and cap memory for subprocesses."""
     os.nice(_NICE_LEVEL)
     limit_bytes = _MEM_LIMIT_MB * 1024 * 1024
-    resource.setrlimit(resource.RLIMIT_AS, (limit_bytes, limit_bytes))
+    resource.setrlimit(resource.RLIMIT_DATA, (limit_bytes, limit_bytes))
+
+
+def _sdk_build_tools_dir():
+    """Return the path to the latest installed Android SDK build-tools, or None."""
+    sdk_root = Path(os.environ.get("ANDROID_SDK",
+                                   os.environ.get("ANDROID_HOME",
+                                                  Path.home() / "Android" / "Sdk")))
+    bt_dir = sdk_root / "build-tools"
+    if not bt_dir.is_dir():
+        return None
+    versions = sorted(
+        (d for d in bt_dir.iterdir() if d.is_dir()),
+        key=lambda d: [int(x) for x in d.name.split(".") if x.isdigit()],
+    )
+    return str(versions[-1]) if versions else None
 
 
 class ObjectionPatcher:
@@ -62,8 +77,8 @@ class ObjectionPatcher:
             "enable_debug": self._decide_debug(),
             "use_aapt2": self._decide_aapt2(),
             "skip_resources": self._decide_skip_resources(),
-            "gadget_config": self._decide_gadget_config(),
             "script_source": self._decide_script_source(),
+            "gadget_config": self._decide_gadget_config(),
             "ignore_nativelibs": self._decide_ignore_nativelibs(),
             "concurrency": self._decide_concurrency(),
             "gadget_version": self._get_frida_version(),
@@ -143,9 +158,15 @@ class ObjectionPatcher:
             json.dumps(self.decisions, indent=2, default=str)
         )
 
+        # Ensure aapt/aapt2 from SDK build-tools are on PATH
+        env = os.environ.copy()
+        bt_dir = _sdk_build_tools_dir()
+        if bt_dir:
+            env["PATH"] = bt_dir + os.pathsep + env.get("PATH", "")
+
         self.echo(f"  Running: {' '.join(cmd)}")
         result = subprocess.run(cmd, cwd=str(output_dir), capture_output=True, text=True,
-                                preexec_fn=_preexec_limits)
+                                env=env, preexec_fn=_preexec_limits)
 
         (output_dir / "objection_stdout.txt").write_text(result.stdout)
         (output_dir / "objection_stderr.txt").write_text(result.stderr)
