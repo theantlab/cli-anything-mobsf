@@ -11,6 +11,7 @@ from pathlib import Path
 from cli_anything.mobsf.core.attack_surface import scan_attack_surface
 from cli_anything.mobsf.core.native_attack_surface import analyse_native_libs
 from cli_anything.mobsf.core.objection_patcher import ObjectionPatcher
+from cli_anything.mobsf.core.report import generate_report
 from cli_anything.mobsf.scripts import script_path, dictionary_path
 
 
@@ -114,6 +115,14 @@ class AnalysisPipeline:
 
         total_elapsed = time.time() - self.started_at.timestamp()
         self._write_summary()
+
+        # Generate unified analysis report
+        try:
+            generate_report(self.output_dir)
+            self.echo(f"\n  {'─' * 56}")
+            self.echo(f"  Report: {self.output_dir / 'analysis_report.txt'}")
+        except Exception as e:
+            self.echo(f"\n  Warning: report generation failed: {e}")
 
         self.echo(f"\n  {'─' * 56}")
         ok = sum(1 for s in self.stage_results.values() if s["status"] == "ok")
